@@ -28,6 +28,10 @@ concurrency:
   group: stock-analysis
   cancel-in-progress: false
 
+env:
+  # This fork discovers candidates by default; false restores manual STOCK_LIST mode.
+  AUTO_DISCOVERY_ENABLED: ${{ vars.AUTO_DISCOVERY_ENABLED || 'true' }}
+
 jobs:
   analyze:
     runs-on: ubuntu-latest
@@ -59,9 +63,32 @@ jobs:
       - name: 创建必要目录
         run: |
           mkdir -p data logs reports
+
+      - name: Verify automatic discovery
+        if: env.AUTO_DISCOVERY_ENABLED == 'true'
+        run: python -m unittest tests.test_market_discovery
+
+      - name: Discover US and Singapore research candidates
+        id: discovery
+        if: env.AUTO_DISCOVERY_ENABLED == 'true'
+        env:
+          DISCOVERY_MARKETS: ${{ vars.DISCOVERY_MARKETS || 'us,sg' }}
+          DISCOVERY_POOL_SIZE: ${{ vars.DISCOVERY_POOL_SIZE || '200' }}
+          DISCOVERY_HISTORY_LIMIT: ${{ vars.DISCOVERY_HISTORY_LIMIT || '30' }}
+          DISCOVERY_TOP_N: ${{ vars.DISCOVERY_TOP_N || '3' }}
+        run: python -m src.services.screening.market_discovery
+
+      - name: Publish market discovery summary
+        if: always() && env.AUTO_DISCOVERY_ENABLED == 'true'
+        run: |
+          if [ -f reports/market_discovery.md ]; then
+            cat reports/market_discovery.md >> "$GITHUB_STEP_SUMMARY"
+          fi
       
       - name: 执行股票分析
+        if: env.AUTO_DISCOVERY_ENABLED != 'true' || (steps.discovery.outputs.stock_list != '' && github.event.inputs.mode != 'market-only')
         env:
+          DISCOVERED_STOCK_LIST: ${{ steps.discovery.outputs.stock_list }}
           # ==========================================
           # AI 配置
           # ==========================================
@@ -455,7 +482,15 @@ jobs:
           # 1. Repository/Environment secrets 或 Repository variables（STOCK_LIST_CONFIG）
           # 2. 同名 Environment variables 注入的 runner 环境变量（STOCK_LIST）
           # 3. 最小默认值
-          if [ -n "${STOCK_LIST_CONFIG:-}" ]; then
+          if [ "$AUTO_DISCOVERY_ENABLED" = "true" ]; then
+            # Empty discovery must never fall back to a sample or saved watchlist.
+            if [ -z "$DISCOVERED_STOCK_LIST" ]; then
+              echo "No US candidates selected; discovery report contains the outcome."
+              exit 0
+            fi
+            export STOCK_LIST="$DISCOVERED_STOCK_LIST"
+            export MARKET_REVIEW_ENABLED=false
+          elif [ -n "${STOCK_LIST_CONFIG:-}" ]; then
             export STOCK_LIST="$STOCK_LIST_CONFIG"
           elif [ -z "${STOCK_LIST:-}" ]; then
             export STOCK_LIST="600519"
