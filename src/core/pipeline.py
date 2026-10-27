@@ -12,6 +12,7 @@ A股自选股智能分析系统 - 核心分析流水线
 """
 
 import logging
+import os
 import inspect
 import threading
 import time
@@ -3025,6 +3026,15 @@ class StockAnalysisPipeline:
         limit: int = 6,
     ) -> Optional[str]:
         """Load locally persisted intelligence as fail-open evidence context."""
+        discovery_context = None
+        if os.getenv("DISCOVERY_NEWS_CONTEXT_PATH"):
+            try:
+                from src.services.screening.news_intelligence import load_stock_context
+                context, count = load_stock_context(code, os.environ["DISCOVERY_NEWS_CONTEXT_PATH"])
+                if count:
+                    discovery_context = context
+            except Exception as exc:
+                logger.warning("Discovery news context unavailable: %s", exc)
         try:
             service = IntelligenceService(config=self.config)
             service.refresh_auto_sources()
@@ -3050,7 +3060,7 @@ class StockAnalysisPipeline:
                 if len(collected) >= limit:
                     break
             if not collected:
-                return None
+                return discovery_context
             lines = [f"## 本地资讯证据池（{stock_name}/{code}）"]
             for idx, item in enumerate(collected[:limit], 1):
                 title = str(item.get("title") or "未命名资讯").strip()
@@ -3064,10 +3074,10 @@ class StockAnalysisPipeline:
                     lines.append(f"   摘要：{summary[:220]}")
                 if url and not url.startswith("no-url:intel:"):
                     lines.append(f"   来源：{url}")
-            return "\n".join(lines)
+            return "\n".join(lines) + ("\n\n" + discovery_context if discovery_context else "")
         except Exception as exc:
             logger.debug("读取本地资讯证据失败（fail-open）: %s", exc)
-            return None
+            return discovery_context
 
     def _build_legacy_analysis_artifacts(
         self,
