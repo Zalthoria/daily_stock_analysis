@@ -2,7 +2,7 @@
 
 This fork's daily Actions workflow discovers research candidates without a personal watchlist. It runs Monday–Friday at 10:00 UTC (18:00 Singapore), subject to GitHub scheduling delays. US data normally comes from the previous completed session; Singapore data normally comes from that day's completed session. Holidays use the most recent completed exchange session. A 20-minute publication buffer prevents a newly closing session from being treated as complete too early.
 
-Open the latest **每日股票分析** run in Actions. Its summary contains the market overview and shortlist. The `analysis-reports-N` artifact includes `reports/market_discovery.md`, an auditable `reports/market_discovery.json`, and the existing AI report when US candidates are selected. Artifacts are retained for 30 days. No email or chat delivery is configured by this feature.
+Open the latest **每日股票分析** run in Actions. Its summary contains the market overview and shortlist. The `analysis-reports-N` artifact includes `reports/market_discovery.md`, an auditable `reports/market_discovery.json`, and the existing AI report when US candidates are selected. Artifacts are retained for 90 days. The [news research layer](news-research.md) adds `news_research.md`, `news_sources.json` and `news_signal_history.json`. No email or chat delivery is configured by this feature.
 
 ## Coverage and selection
 
