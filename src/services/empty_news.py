@@ -19,9 +19,24 @@ news_result_count 因此退居第二位，只用来解释「确实没有证据�
 from __future__ import annotations
 
 from collections.abc import Mapping
+import re
 from typing import Any, Optional, Tuple
 
 from src.report_language import SUPPORTED_REPORT_LANGUAGES
+
+
+def guard_news_checklist(dashboard, language="en"):
+    """Incomplete source coverage cannot certify absence of negative news."""
+    if not isinstance(dashboard, dict) or not isinstance(dashboard.get("battle_plan"), dict):
+        return
+    checklist = dashboard["battle_plan"].get("action_checklist")
+    if not isinstance(checklist, list):
+        return
+    pattern = re.compile(r"\bno (?:major |material |significant )?(?:negative|adverse|bad) news\b|无重大利空|没有重大利空", re.I)
+    warning = {"en": "⚠️ News coverage is incomplete; absence of material negative news is unverified.",
+               "zh": "⚠️ 新闻覆盖不完整，不能确认不存在重大利空。",
+               "ko": "⚠️ 뉴스 범위가 불완전하여 중대한 악재가 없다고 확인할 수 없습니다."}.get(language, "⚠️ News risk remains unverified.")
+    dashboard["battle_plan"]["action_checklist"] = [warning if isinstance(item, str) and pattern.search(item) else item for item in checklist]
 
 _ZH_NOT_CONFIGURED = "⚠️ 未配置搜索渠道，本次分析未纳入新闻面证据。"
 _EN_NOT_CONFIGURED = (
