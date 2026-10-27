@@ -80,3 +80,6 @@ fastapi-guard>=8.1.1        # Optional security middleware (GUARD_ENABLED=true):
 # Installed from a pinned GitHub release wheel (sha256 checked); if that release URL is
 # removed or replaced, update the URL and hash here or installs of this file will fail.
 fxmacrodata-public-client @ https://github.com/fxmacrodata/fxmacrodata-public-client/releases/download/v0.1.0/fxmacrodata_public_client-0.1.0-py3-none-any.whl#sha256=5c60ff217243ff4001f178d4fdd8c3c8ce29001ad1ea0a170ed96606f0dd07c8
+
+# Public RSS/Atom news ingestion for automatic discovery
+feedparser>=6.0.11,<7
