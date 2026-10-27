@@ -209,20 +209,31 @@ def eligible(row, market):
             and row["daily_quality_score"] >= 80)
 
 
-def scan_market(key, now, pool_size, history_limit, top_n):
+def scan_market(key, now, pool_size, history_limit, top_n, news_bundle=None):
     market = MARKETS[key]
     target, phase = completed_session(market, now)
     frame, matched, returned = fetch_universe(key, market, target, pool_size)
     initial = rank(frame, SEED_WEIGHTS).head(history_limit)
+    baseline_codes = set(initial["code"]) if not initial.empty else set()
+    if news_bundle and not frame.empty:
+        from src.services.screening.news_intelligence import matches
+        extras = [(row, matches(row, news_bundle["articles"])) for row in frame.to_dict("records")
+                  if row["code"] not in baseline_codes]
+        extras = sorted([(row, stories[0]["published_at"]) for row, stories in extras if stories],
+                        key=lambda pair: pair[1], reverse=True)[:10]
+        if extras:
+            initial = pd.concat([initial, pd.DataFrame([row for row, _ in extras])], ignore_index=True)
     tickers = initial["code"].tolist() if not initial.empty else []
     tickers += [symbol for symbol, _ in market.benchmarks]
     # Bounded requests, no credential requirements or private source fallback.
     data = yf.download(tickers, period="6mo", interval="1d", group_by="ticker",
                        auto_adjust=True, progress=False, threads=4, timeout=15)
-    rows, excluded, benchmarks = [], [], []
+    rows, excluded, benchmarks, histories = [], [], [], {}
     for row in initial.to_dict("records"):
         try:
-            rows.append(enrich(row, normalized_history(data, row["code"], target, row.get("closing_quote"))))
+            history = normalized_history(data, row["code"], target, row.get("closing_quote"))
+            rows.append(enrich(row, history))
+            histories[row["code"]] = history
         except (ValueError, KeyError, TypeError) as exc:
             excluded.append({"code": row["code"], "reason": str(exc)})
     for symbol, name in market.benchmarks:
@@ -242,12 +253,38 @@ def scan_market(key, now, pool_size, history_limit, top_n):
         raise RuntimeError("No fresh completed-session histories available")
     scored = rank(pd.DataFrame(rows), FINAL_WEIGHTS)
     all_rows = scored.to_dict("records")
-    qualified = [row for row in all_rows if eligible(row, market)]
-    return {"market": key, "status": "ok", "phase_now": phase, "bar_date": str(target),
+    baseline = rank(pd.DataFrame([row for row in rows if row["code"] in baseline_codes]), FINAL_WEIGHTS)
+    qualified = [row for row in baseline.to_dict("records") if eligible(row, market)]
+    result = {"market": key, "status": "ok", "phase_now": phase, "bar_date": str(target),
             "matched_universe": matched, "returned": returned, "valid_snapshots": len(frame),
             "history_attempted": len(initial), "history_valid": len(rows),
             "qualifying": len(qualified), "picks": qualified[:top_n],
             "benchmarks": benchmarks, "ranked_candidates": all_rows, "excluded": excluded}
+    if news_bundle is not None:
+        from src.services.screening.news_intelligence import company_news, company_stories, extract_events, score_candidate
+        try:
+            company_news(qualified[:top_n] or all_rows[:3], key, now, news_bundle)
+            by_code = {row["code"]: company_stories(row, news_bundle["articles"]) for row in all_rows}
+            stories = sorted([s for values in by_code.values() for s in values], key=lambda s: s["published_at"], reverse=True)[:24]
+            events, errors = extract_events(stories)
+            calendar = xcals.get_calendar(market.calendar)
+            close = calendar.session_close(pd.Timestamp(target)).to_pydatetime()
+            market_ok = bool(benchmarks) and all(b["price"] > b["ma20"] for b in benchmarks)
+            rankings = []
+            for row in all_rows:
+                ranked = score_candidate(row, by_code[row["code"]], events, market, now, close, eligible(row, market), market_ok)
+                for option in ranked["events"]:
+                    published = pd.Timestamp(option["story"]["published_at"])
+                    history = histories[row["code"]]
+                    before = history.loc[history["date"].map(lambda day: calendar.is_session(day) and calendar.session_close(day) < published)]
+                    option["close_change_since_publication_pct"] = ((row["price"] / float(before.iloc[-1]["close"]) - 1) * 100
+                                                                   if option["price_after_news"] and not before.empty else None)
+                rankings.append(ranked)
+            result.update(news_rankings=sorted(rankings, key=lambda r: (r["score"] is not None, r["score"] or 0), reverse=True),
+                          news_errors=errors, news_extra_history_slots=len(initial) - len(baseline_codes))
+        except Exception as exc:
+            result["news_errors"] = [f"{type(exc).__name__}: {exc}"]
+    return result
 
 
 def clean_json(value):
@@ -369,12 +406,35 @@ def main():
     top = int(os.getenv("DISCOVERY_TOP_N", "3"))
     if not (1 <= top <= 5 and top <= history <= pool <= 250):
         raise ValueError("Require 1 <= top <= 5 and top <= history <= pool <= 250")
-    result = run(markets, datetime.now(timezone.utc), pool, history, top)
+    now = datetime.now(timezone.utc)
+    news_enabled = os.getenv("DISCOVERY_NEWS_ENABLED", "false").lower() == "true"
+    bundle = None
+    if news_enabled:
+        from src.services.screening.news_intelligence import collect
+        if not 1 <= int(os.getenv("DISCOVERY_NEWS_MAX_AGE_HOURS", "72")) <= 168:
+            raise ValueError("DISCOVERY_NEWS_MAX_AGE_HOURS must be 1..168")
+        bundle = collect(now)
+    scanner = (lambda *args: scan_market(*args, news_bundle=bundle)) if bundle is not None else scan_market
+    result = run(markets, now, pool, history, top, scanner=scanner)
     reports = Path("reports")
     reports.mkdir(exist_ok=True)
     (reports / "market_discovery.md").write_text(render_report(result), encoding="utf-8")
     (reports / "market_discovery.json").write_text(json.dumps(result, indent=2, allow_nan=False), encoding="utf-8")
+    if bundle is not None:
+        from src.services.screening.news_intelligence import render_news
+        from src.services.screening.news_tracking import update_tracking
+        try:
+            tracking, records = update_tracking(result, datetime.now(timezone.utc), os.getenv("NEWS_STATE_DIR", "data/news_state"))
+            (reports / "news_signal_history.json").write_text(json.dumps(records, indent=2, allow_nan=False), encoding="utf-8")
+        except Exception as exc:
+            tracking = f"## Forward tracking\n\nUnavailable: {type(exc).__name__}: {exc}"
+        (reports / "news_research.md").write_text(render_news(result, bundle, tracking), encoding="utf-8")
+        (reports / "news_sources.json").write_text(json.dumps(bundle, indent=2, allow_nan=False), encoding="utf-8")
     stocks = [p["code"] for m in result["markets"] if m["market"] == "us" and m["status"] == "ok" for p in m["picks"]]
+    if bundle is not None:
+        confirmed = [p["code"] for m in result["markets"] if m["market"] == "us"
+                     for p in m.get("news_rankings", []) if p["status"] == "candidate"][:3]
+        stocks = list(dict.fromkeys(confirmed + stocks))[:5]
     output = os.getenv("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as handle:
