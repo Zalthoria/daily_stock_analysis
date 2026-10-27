@@ -2477,7 +2477,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 "✅/⚠️/❌ Check 1: bullish alignment",
                 "✅/⚠️/❌ Check 2: reasonable bias (may be relaxed for strong trends)",
                 "✅/⚠️/❌ Check 3: volume confirms",
-                "✅/⚠️/❌ Check 4: no major negative news",
+                "⚠️ Check 4: news coverage and identified risks; absence of negative news is unverified",
                 "✅/⚠️/❌ Check 5: healthy chip structure",
                 "✅/⚠️/❌ Check 6: reasonable PE valuation"
             ]
@@ -2540,7 +2540,7 @@ Output strictly in the following JSON format. This is a complete Decision Dashbo
                 "✅/⚠️/❌ Check 1: current structure meets the active skill conditions",
                 "✅/⚠️/❌ Check 2: entry position and risk-reward are reasonable",
                 "✅/⚠️/❌ Check 3: volume/volatility/chips support the view",
-                "✅/⚠️/❌ Check 4: no major negative news",
+                "⚠️ Check 4: news coverage and identified risks; absence of negative news is unverified",
                 "✅/⚠️/❌ Check 5: clear position size and stop-loss plan",
                 "✅/⚠️/❌ Check 6: valuation/earnings/catalysts match the conclusion"
             ]
@@ -4921,7 +4921,9 @@ Below are the news search results for **{stock_name}({code})** from the last {ne
 """
         elif english:
             prompt += """
-No recent news was found for this stock. Base the analysis mainly on the technical data.
+No usable recent news evidence was supplied for this stock. Retrieval may be unavailable or incomplete.
+Base the analysis mainly on the technical data. News risk is UNKNOWN: do not mark a negative-news
+check as passed, infer that no adverse news exists, or invent earnings dates or catalysts.
 """
         else:
             prompt += """
@@ -5449,6 +5451,8 @@ Output the complete Decision Dashboard in JSON format."""
 
             # 提取 dashboard 数据
             dashboard = data.get('dashboard', None)
+            from src.services.empty_news import guard_news_checklist
+            guard_news_checklist(dashboard, report_language)
             guardrail_reason = data.get("guardrail_reason") or data.get("downgrade_reason")
             if guardrail_reason and isinstance(dashboard, dict):
                 score_calibration = dashboard.get("decision_score_calibration")
