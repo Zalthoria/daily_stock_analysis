@@ -66,7 +66,15 @@ jobs:
 
       - name: Verify automatic discovery
         if: env.AUTO_DISCOVERY_ENABLED == 'true'
-        run: python -m unittest tests.test_market_discovery
+        run: python -m unittest tests.test_market_discovery tests.test_news_intelligence tests.test_news_tracking
+
+      - name: Restore news forward journal
+        if: env.AUTO_DISCOVERY_ENABLED == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: data/news_state
+          key: news-journal-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: news-journal-v1-
 
       - name: Discover US and Singapore research candidates
         id: discovery
@@ -76,13 +84,36 @@ jobs:
           DISCOVERY_POOL_SIZE: ${{ vars.DISCOVERY_POOL_SIZE || '200' }}
           DISCOVERY_HISTORY_LIMIT: ${{ vars.DISCOVERY_HISTORY_LIMIT || '30' }}
           DISCOVERY_TOP_N: ${{ vars.DISCOVERY_TOP_N || '3' }}
+          DISCOVERY_NEWS_ENABLED: ${{ vars.DISCOVERY_NEWS_ENABLED || 'true' }}
+          DISCOVERY_NEWS_MAX_AGE_HOURS: ${{ vars.DISCOVERY_NEWS_MAX_AGE_HOURS || '72' }}
+          NEWS_USER_AGENT: DailyStockAnalysis/1.0 (+${{ github.server_url }}/${{ github.repository }})
+          NEWS_ROUND_TRIP_COST_BPS: ${{ vars.NEWS_ROUND_TRIP_COST_BPS || '20' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEYS: ${{ secrets.GEMINI_API_KEYS }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || secrets.GEMINI_MODEL || 'gemini-3-flash-preview' }}
+          GEMINI_MODEL_FALLBACK: ${{ vars.GEMINI_MODEL_FALLBACK || secrets.GEMINI_MODEL_FALLBACK || 'gemini-2.5-flash' }}
+          LITELLM_MODEL: ${{ vars.LITELLM_MODEL || secrets.LITELLM_MODEL }}
+          LITELLM_API_KEY: ${{ secrets.LITELLM_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_BASE_URL: ${{ vars.OPENAI_BASE_URL || secrets.OPENAI_BASE_URL }}
+          REPORT_LANGUAGE: en
         run: python -m src.services.screening.market_discovery
+
+      - name: Save news forward journal
+        if: always() && env.AUTO_DISCOVERY_ENABLED == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: data/news_state
+          key: news-journal-v1-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Publish market discovery summary
         if: always() && env.AUTO_DISCOVERY_ENABLED == 'true'
         run: |
           if [ -f reports/market_discovery.md ]; then
             cat reports/market_discovery.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f reports/news_research.md ]; then
+            cat reports/news_research.md >> "$GITHUB_STEP_SUMMARY"
           fi
       
       - name: 执行股票分析
@@ -490,6 +521,9 @@ jobs:
             fi
             export STOCK_LIST="$DISCOVERED_STOCK_LIST"
             export MARKET_REVIEW_ENABLED=false
+            if [ -f reports/news_sources.json ]; then
+              export DISCOVERY_NEWS_CONTEXT_PATH=reports/market_discovery.json
+            fi
           elif [ -n "${STOCK_LIST_CONFIG:-}" ]; then
             export STOCK_LIST="$STOCK_LIST_CONFIG"
           elif [ -z "${STOCK_LIST:-}" ]; then
@@ -603,7 +637,7 @@ jobs:
           path: |
             reports/
             logs/
-          retention-days: 30
+          retention-days: 90
       
       - name: 显示运行结果
         if: always()
