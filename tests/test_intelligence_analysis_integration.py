@@ -5,9 +5,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 import os
+import json
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import patch
 
 from src.config import Config, get_config
@@ -74,6 +76,30 @@ class PersistedIntelligenceAnalysisIntegrationTestCase(unittest.TestCase):
         self.assertIn("本地资讯证据池", context)
         self.assertIn("Company wins major AI order", context)
         self.assertIn("https://news.example.com/symbol", context)
+
+    def test_fresh_discovery_articles_reach_shared_pipeline_context(self):
+        path = Path(self._temp_dir.name) / "discovery.json"
+        path.write_text(json.dumps({"generated_at": datetime.now(timezone.utc).isoformat(), "markets": [
+            {"news_rankings": [{"code": "AAPL", "status": "watch", "reason": "New guidance",
+                                "events": [{"story": {"title": "Apple raises guidance", "url": "https://example.com/apple",
+                                                       "published_at": datetime.now(timezone.utc).isoformat(), "excerpt": "Explicit guidance evidence"}}]}]}]}))
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.config = self.config
+        with patch.dict(os.environ, {"DISCOVERY_NEWS_CONTEXT_PATH": str(path)}), patch("src.core.pipeline.IntelligenceService") as service:
+            service.return_value.list_items.return_value = {"items": []}
+            context = pipeline._load_persisted_intelligence_context(code="AAPL", stock_name="Apple", market="us")
+        self.assertIn("Apple raises guidance", context)
+        self.assertIn("absence of negative news is unverified", context)
+
+    def test_discovery_placeholder_does_not_count_as_news_evidence(self):
+        path = Path(self._temp_dir.name) / "discovery-empty.json"
+        path.write_text(json.dumps({"generated_at": datetime.now(timezone.utc).isoformat(), "markets": [
+            {"news_rankings": [{"code": "AAPL", "status": "no_evidence", "events": []}]}]}))
+        pipeline = StockAnalysisPipeline.__new__(StockAnalysisPipeline)
+        pipeline.config = self.config
+        with patch.dict(os.environ, {"DISCOVERY_NEWS_CONTEXT_PATH": str(path)}), patch("src.core.pipeline.IntelligenceService") as service:
+            service.return_value.list_items.return_value = {"items": []}
+            self.assertIsNone(pipeline._load_persisted_intelligence_context(code="AAPL", stock_name="Apple", market="us"))
 
     def test_pipeline_refreshes_auto_sources_before_loading_local_intelligence(self) -> None:
         self.config.news_intel_auto_fetch_enabled = True
